@@ -110,7 +110,7 @@
   function detailView(r) {
     var grossCheck = Math.round(Math.pow(10, D.fit.a + D.fit.b * Math.log10(Math.max(1, r.tvl_usd))));
     var w = D.odds_curve.weights;
-    function G(t) { var z = w[0] + w[1] * t + w[2] * t * t + w[3] * Math.log10(Math.max(1, r.tvl_usd)); return 1 / (1 + Math.exp(-z)); }
+    function G(t) { var z = w[0] + w[1] * t + w[2] * Math.log10(Math.max(1, r.tvl_usd)); return 1 / (1 + Math.exp(-z)); }
     var ageY = r.age_days == null ? null : r.age_days / 365.25;
     var oddsText = ageY == null ? 'age unrecorded, priced at the board\'s median age' : 'at ' + age(ageY * 365.25) + ' tokenless, the fitted curve leaves ' + Math.round(r.launch_odds * 100) + '% of its launch probability still ahead (G(' + D.odds_curve.horizon_years + 'y) − G(age)) / (1 − G(age))';
     var html = '<button class="back" id="back">← Back to the board</button><section class="detail">' +
@@ -148,7 +148,11 @@
       '<table><thead><tr><th>Candidate</th><th class="n">Leave-one-out</th><th class="n">Walk-forward</th><th>Verdict</th></tr></thead><tbody>';
     D.tests.forEach(function (t) { html += '<tr><td>' + esc(t.name) + '</td><td class="n">' + t.loo_rmse.toFixed(3) + '</td><td class="n">' + t.walk_forward_rmse.toFixed(3) + '</td><td>' + esc(t.verdict) + '</td></tr>'; });
     html += '</tbody></table>' +
-      '<p>Also fitted and dropped on the same two tests: category intercepts on the line, a seven-day momentum tilt, chain-count and age tilts on value, and nearest-neighbour multiples — each lost to the plain line out of sample, so none of them moves a price here. Seven-day change is still shown on every row for the reader.</p>' +
+      '<p>Also fitted and dropped on the same two tests: category intercepts on the line, a seven-day momentum tilt, chain-count and age tilts on value, nearest-neighbour multiples, and robust re-fits of the line (median, Huber, trimmed) — each lost or tied out of sample, so none of them moves a price here. Seven-day change is still shown on every row for the reader.</p>' +
+      '<h3>The launch curve was re-selected the same way</h3><p>Each candidate curve was fitted on one half of the dated record by listing date and scored against actual token status on the other half — in both directions, with Brier score and log-loss (lower is better). Version 2\'s curve carried a squared age term; watch what it does on the reverse split, fitted on the young and asked about the old:</p>' +
+      '<table><thead><tr><th>Candidate curve</th><th class="n">Brier fwd</th><th class="n">Log-loss fwd</th><th class="n">Brier rev</th><th class="n">Log-loss rev</th><th>Verdict</th></tr></thead><tbody>';
+    D.odds_tests.forEach(function (t) { html += '<tr><td>' + esc(t.name) + '</td><td class="n">' + t.brier_forward.toFixed(4) + '</td><td class="n">' + t.logloss_forward.toFixed(4) + '</td><td class="n">' + t.brier_reverse.toFixed(4) + '</td><td class="n">' + t.logloss_reverse.toFixed(4) + '</td><td>' + esc(t.verdict) + '</td></tr>'; });
+    html += '</tbody></table>' +
       '<p>Each row\'s range is the shipped line\'s own 80th-percentile leave-one-out error (×' + Math.pow(10, D.range_spread).toFixed(1) + ' either way). It is wide because launch pricing is wide; the radar prints it instead of hiding it.</p>' +
       '<h3>Who is on the board, and who is not</h3>' +
       '<p>The board holds every watchlist protocol (TVL at or above ' + usd(D.floor_usd) + ', no token recorded, not a wrapped or staked product of a tokenized parent) plus the early radar below that floor, excluding anything visibly a tokenized protocol\'s product (versioned names, wrapped or staked products, exchange house brands, bridge and staking categories, or a first name shared with a tokenized protocol). Accounting: ' + D.accounting.ranked + ' ranked + ' + D.accounting.trading + ' trading and fitted on + ' + D.accounting.unpriced + ' tokens with no price + ' + D.accounting.tokenized_products + ' tokenized products set aside + ' + D.accounting.below_floor_other + ' pre-token protocols below the board\'s cut = ' + D.scanned + '.</p>' +

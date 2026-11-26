@@ -85,7 +85,10 @@ for (const name of shots) {
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 const shipped = radar.tests[0]!;
+const shippedOdds = radar.odds_tests[0]!;
+const droppedOdds = radar.odds_tests[1]!;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols scanned, ${snapshot.watchlist.length} watchlist, ${board.length} pre-token rows ranked; top: ${board[0]!.name} at $${board[0]!.implied_value_usd.toLocaleString('en-US')} implied\n` +
-  `token radar: pricing line log10(mcap) = ${radar.fit.a} + ${radar.fit.b} * log10(TVL) on ${radar.fit.peers} priced peers; blind tests: leave-one-out RMSE ${shipped.loo_rmse}, walk-forward ${shipped.walk_forward_rmse} (log10)\n`,
+  `token radar: pricing line log10(mcap) = ${radar.fit.a} + ${radar.fit.b} * log10(TVL) on ${radar.fit.peers} priced peers; blind tests: leave-one-out RMSE ${shipped.loo_rmse}, walk-forward ${shipped.walk_forward_rmse} (log10)\n` +
+  `token radar: launch curve re-selected on time splits both ways: shipped log-loss ${shippedOdds.logloss_forward} forward / ${shippedOdds.logloss_reverse} reverse, against the v2 quadratic curve's ${droppedOdds.logloss_forward} / ${droppedOdds.logloss_reverse}\n`,
 );

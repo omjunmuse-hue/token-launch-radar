@@ -82,6 +82,15 @@ export interface ModelTest {
   verdict: string;
 }
 
+export interface OddsTest {
+  name: string;
+  brier_forward: number;
+  logloss_forward: number;
+  brier_reverse: number;
+  logloss_reverse: number;
+  verdict: string;
+}
+
 export interface RadarData {
   as_of: string;
   floor_usd: number;
@@ -94,6 +103,7 @@ export interface RadarData {
   odds_curve: { weights: number[]; horizon_years: number; fitted_on: number };
   range_spread: number;
   tests: ModelTest[];
+  odds_tests: OddsTest[];
   accounting: { ranked: number; trading: number; unpriced: number; tokenized_products: number; below_floor_other: number };
   rows: BoardRow[];
   peers: PeerRow[];
@@ -149,7 +159,7 @@ function linFit(xs: number[], ys: number[]): { a: number; b: number } {
   return { a: my - b * mx, b };
 }
 
-/** The shipped pricing line: log10(mcap) = a + b * log10(TVL). */
+/** The shipped pricing line: log10(mcap) = a + b * log10(TVL), least squares. */
 export function fitPricingLine(peers: SnapshotProtocol[]): { a: number; b: number } {
   return linFit(peers.map((p) => Math.log10(p.tvl_usd)), peers.map((p) => Math.log10(p.mcap_usd!)));
 }
@@ -171,46 +181,108 @@ function solveLinear(A: number[][], v: number[]): number[] {
   return v.map((x, i) => x / A[i]![i]!);
 }
 
-/**
- * The launch curve: a logistic fit of "has a token" on [1, ageYears,
- * ageYears^2, log10(TVL)] over every dated protocol, by IRLS. G(t) is the
- * fitted probability that a protocol with this TVL has launched by age t.
- */
-export function fitLaunchCurve(snapshot: Snapshot): { weights: number[]; fittedOn: number } {
-  const dated = snapshot.protocols
+interface DatedRow { ageY: number; logT: number; y: number; listed: number }
+
+function datedRows(snapshot: Snapshot): DatedRow[] {
+  return snapshot.protocols
     .filter((p) => p.listed_at !== null)
     .map((p) => ({
       ageY: Math.max(0, (ageDays(p.listed_at, snapshot.as_of) ?? 0) / 365.25),
       logT: Math.log10(Math.max(1, p.tvl_usd)),
       y: p.mcap_usd !== null ? 1 : 0,
+      listed: Date.parse(`${p.listed_at}T00:00:00Z`),
     }));
-  const X = dated.map((d) => [1, d.ageY, d.ageY * d.ageY, d.logT]);
-  const w = [0, 0, 0, 0];
-  const sig = (z: number) => 1 / (1 + Math.exp(-z));
-  for (let iter = 0; iter < 25; iter++) {
-    const A = Array.from({ length: 4 }, () => new Array(4).fill(0));
-    const v = new Array(4).fill(0);
+}
+
+const sig = (z: number) => 1 / (1 + Math.exp(-z));
+
+/** Logistic regression by IRLS on caller-supplied features. */
+function fitLogistic(rows: DatedRow[], feats: (d: DatedRow) => number[]): number[] {
+  const X = rows.map(feats);
+  const k = X[0]!.length;
+  const w = new Array(k).fill(0);
+  for (let iter = 0; iter < 60; iter++) {
+    const A = Array.from({ length: k }, () => new Array(k).fill(0));
+    const v = new Array(k).fill(0);
     for (let i = 0; i < X.length; i++) {
-      const z = X[i]!.reduce((s, f, j) => s + f * w[j]!, 0);
-      const mu = sig(z);
+      const mu = sig(X[i]!.reduce((s, f, j) => s + f * w[j]!, 0));
       const wgt = Math.max(1e-6, mu * (1 - mu));
-      for (let a = 0; a < 4; a++) {
-        v[a]! += X[i]![a]! * (dated[i]!.y - mu);
-        for (let b = 0; b < 4; b++) A[a]![b]! += X[i]![a]! * X[i]![b]! * wgt;
+      for (let a = 0; a < k; a++) {
+        v[a]! += X[i]![a]! * (rows[i]!.y - mu);
+        for (let b = 0; b < k; b++) A[a]![b]! += X[i]![a]! * X[i]![b]! * wgt;
       }
     }
-    for (let a = 0; a < 4; a++) A[a]![a]! += 1e-6;
+    for (let a = 0; a < k; a++) A[a]![a]! += 1e-8;
     const step = solveLinear(A, v);
     let maxStep = 0;
-    for (let j = 0; j < 4; j++) { w[j]! += step[j]!; maxStep = Math.max(maxStep, Math.abs(step[j]!)); }
-    if (maxStep < 1e-8) break;
+    for (let j = 0; j < k; j++) { w[j]! += step[j]!; maxStep = Math.max(maxStep, Math.abs(step[j]!)); }
+    if (maxStep < 1e-9) break;
   }
-  return { weights: w, fittedOn: dated.length };
+  return w;
+}
+
+const ODDS_FEATURES = {
+  shipped: (d: DatedRow) => [1, d.ageY, d.logT],
+  quadratic: (d: DatedRow) => [1, d.ageY, d.ageY * d.ageY, d.logT],
+  ageOnly: (d: DatedRow) => [1, d.ageY],
+};
+
+/**
+ * The launch curve: a logistic fit of "has a token" on [1, ageYears,
+ * log10(TVL)] over every dated protocol, by IRLS. G(t) is the fitted
+ * probability that a protocol with this TVL has launched by age t.
+ * The feature set was chosen by the time-split tests in oddsTests: the
+ * quadratic age term this curve used in v2 collapses out of sample.
+ */
+export function fitLaunchCurve(snapshot: Snapshot): { weights: number[]; fittedOn: number } {
+  const dated = datedRows(snapshot);
+  return { weights: fitLogistic(dated, ODDS_FEATURES.shipped), fittedOn: dated.length };
 }
 
 function launchG(weights: number[], ageYears: number, logT: number): number {
-  const z = weights[0]! + weights[1]! * ageYears + weights[2]! * ageYears * ageYears + weights[3]! * logT;
-  return 1 / (1 + Math.exp(-z));
+  return sig(weights[0]! + weights[1]! * ageYears + weights[2]! * logT);
+}
+
+const round4 = (x: number) => Math.round(x * 10000) / 10000;
+
+/**
+ * Odds-model selection, run at build time: each candidate is fitted on
+ * one half of the dated record by listing date and scored (Brier and
+ * log-loss against actual token status) on the other half — in both
+ * directions, because a curve that only extrapolates one way is a trap.
+ */
+export function oddsTests(snapshot: Snapshot): OddsTest[] {
+  const dated = [...datedRows(snapshot)].sort((a, b) => a.listed - b.listed);
+  const half = Math.floor(dated.length / 2);
+  const older = dated.slice(0, half);
+  const younger = dated.slice(half);
+  function score(feats: (d: DatedRow) => number[]): { bf: number; lf: number; br: number; lr: number } {
+    function metrics(w: number[], rows: DatedRow[]): { brier: number; logloss: number } {
+      let b = 0;
+      let l = 0;
+      for (const r of rows) {
+        const p = sig(feats(r).reduce((s, f, j) => s + f * w[j]!, 0));
+        b += (p - r.y) ** 2;
+        const pc = Math.min(1 - 1e-9, Math.max(1e-9, p));
+        l -= r.y * Math.log(pc) + (1 - r.y) * Math.log(1 - pc);
+      }
+      return { brier: b / rows.length, logloss: l / rows.length };
+    }
+    const fwd = metrics(fitLogistic(older, feats), younger);
+    const rev = metrics(fitLogistic(younger, feats), older);
+    return { bf: fwd.brier, lf: fwd.logloss, br: rev.brier, lr: rev.logloss };
+  }
+  const shipped = score(ODDS_FEATURES.shipped);
+  const quad = score(ODDS_FEATURES.quadratic);
+  const age = score(ODDS_FEATURES.ageOnly);
+  const row = (name: string, s: { bf: number; lf: number; br: number; lr: number }, verdict: string): OddsTest => ({
+    name, brier_forward: round4(s.bf), logloss_forward: round4(s.lf), brier_reverse: round4(s.br), logloss_reverse: round4(s.lr), verdict,
+  });
+  return [
+    row('Launch curve: age + TVL, linear (shipped)', shipped, 'kept'),
+    row('Launch curve: quadratic age + TVL (v2)', quad, 'dropped: collapses on the reverse split (log-loss above 2) — the squared term extrapolates wildly to old protocols'),
+    row('Launch curve: age only', age, 'dropped: ties the shipped curve forward, loses the reverse split'),
+  ];
 }
 
 /** Odds that a protocol still tokenless at this age launches by the horizon. */
@@ -435,6 +507,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   const line = { a: round3(rawLine.a), b: round3(rawLine.b) };
   const curve = fitLaunchCurve(snapshot);
   const { tests, rangeSpread } = modelTests(peersFit, snapshot.as_of);
+  const oddsTestRows = oddsTests(snapshot);
   const datedAges = snapshot.protocols
     .map((p) => ageDays(p.listed_at, snapshot.as_of))
     .filter((a) => a !== null) as number[];
@@ -541,6 +614,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
       odds_curve: { weights: curve.weights.map(round3), horizon_years: ODDS_HORIZON_YEARS, fitted_on: curve.fittedOn },
       range_spread: round3(rangeSpread),
       tests,
+      odds_tests: oddsTestRows,
       accounting: {
         ranked: rows.length,
         trading: peersFit.length,

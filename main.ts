@@ -42,6 +42,14 @@ if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
   process.exit(1);
 }
+// Determinism is a claim the dashboard prints, so the program proves it
+// on every run: build the radar a second time from the same bytes and
+// refuse to hand in anything if the two boards differ by a single byte.
+const second = buildRadar(snapshot);
+if (JSON.stringify(second.board) !== JSON.stringify(board)) {
+  process.stderr.write('token radar: the model is not deterministic: two builds of the same snapshot disagree\n');
+  process.exit(1);
+}
 
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
@@ -76,6 +84,8 @@ for (const name of shots) {
 
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
+const shipped = radar.tests[0]!;
 process.stdout.write(
-  `token radar: ${snapshot.protocols.length} protocols scanned, ${snapshot.watchlist.length} watchlist, ${board.length} pre-token rows ranked; top: ${board[0]!.name} at $${board[0]!.implied_value_usd.toLocaleString('en-US')} implied\n`,
+  `token radar: ${snapshot.protocols.length} protocols scanned, ${snapshot.watchlist.length} watchlist, ${board.length} pre-token rows ranked; top: ${board[0]!.name} at $${board[0]!.implied_value_usd.toLocaleString('en-US')} implied\n` +
+  `token radar: pricing line log10(mcap) = ${radar.fit.a} + ${radar.fit.b} * log10(TVL) on ${radar.fit.peers} priced peers; blind tests: leave-one-out RMSE ${shipped.loo_rmse}, walk-forward ${shipped.walk_forward_rmse} (log10)\n`,
 );
